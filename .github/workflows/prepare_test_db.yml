@@ -64,8 +64,34 @@ jobs:
           MODULES=$(python3 -c "from pathlib import Path; print(' '.join(eval(Path('MANIFEST').read_text())['install']))")
           MODULES="$MODULES ${{ inputs.extra_modules }}"
           echo "Installing modules: $MODULES"
-          ./odoobin update $MODULES > /dev/null 2>&1
+          if ! ./odoobin update $MODULES > update_run.log 2>&1; then
+            echo "::error::Module update failed - last 150 lines of the log follow"
+            tail -n 150 update_run.log
+            exit 1
+          fi
           echo "Update done. Log available at /update.log"
+          # Cross-check: a green exit code alone is not enough. If a module
+          # blows up during install, the update can still end quietly and we
+          # would back up a half-built database - the robot tests then fail
+          # later on with missing menus instead of the real error.
+          INSTALLED=$(echo "SELECT name FROM ir_module_module WHERE state = 'installed';" \
+            | ./odoobin psql 2>/dev/null | tr -d ' ')
+          if [ -z "$INSTALLED" ]; then
+            echo "::error::Could not read the module list from the database."
+            tail -n 150 update_run.log
+            exit 1
+          fi
+          MISSING=""
+          for module in $MODULES; do
+            echo "$INSTALLED" | grep -qx "$module" || MISSING="$MISSING $module"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Requested but not installed:$MISSING"
+            echo "--- last 150 lines of the update log ---"
+            tail -n 150 update_run.log
+            exit 1
+          fi
+          echo "All $(echo $MODULES | wc -w) requested modules are installed."
           if [[ ! -z "${{ inputs.uninstall_modules }}" ]]; then
             echo "Uninstalling modules: ${{ inputs.uninstall_modules }}"
             ./odoobin uninstall ${{ inputs.uninstall_modules }}
