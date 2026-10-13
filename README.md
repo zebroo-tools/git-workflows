@@ -13,13 +13,13 @@ permissions: write-all
 
 jobs:
   run_robo_tests:
-    uses: Odoo-Ninjas/git-workflows/.github/workflows/robotests.yml@v9
+    uses: zebroo-tools/git-workflows/.github/workflows/robotests.yml@v9
     with:
       enabled: true
       projectname: myproject
 
   run_unit_tests:
-    uses: Odoo-Ninjas/git-workflows/.github/workflows/unittests.yml@v9
+    uses: zebroo-tools/git-workflows/.github/workflows/unittests.yml@v9
     with:
       enabled: true
       projectname: myproject
@@ -41,7 +41,7 @@ permissions: write-all
 
 jobs:
   deploy-subversions:
-    uses: Odoo-Ninjas/git-workflows/.github/workflows/deploy_to_subversions.yml@v9
+    uses: zebroo-tools/git-workflows/.github/workflows/deploy_to_subversions.yml@v9
     with:
       branches: <mappings>
     secrets:
