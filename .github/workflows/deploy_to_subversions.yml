@@ -1,0 +1,130 @@
+# https://docs.github.com/en/actions/using-workflows/reusing-workflows
+name: Deploy fixes to other versions with rebase main
+
+on:
+  workflow_call:
+    inputs:
+      branches:
+        required: true
+        type: string
+        # is an array like:
+        # '15.0:main 16.0:main ||| 14.0:15.0'
+      runner_label:
+        required: false
+        type: string
+        default: "self-hosted"
+        
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: true
+
+permissions: write-all
+
+jobs:
+  build:
+
+    runs-on: ${{ inputs.runner_label || 'self-hosted' }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: setup ssh
+      run: |
+        mkdir -p ~/.ssh || exit 0
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 400 ~/.ssh/id_rsa
+        chmod 500 ~/.ssh
+        cat .git/config
+
+    - name: setup default name / email
+      run: |
+        username="github-action@github.com"
+        git config --global user.email "${username}"
+        git config --global user.name "${username}"
+        git remote set-url origin "git@github.com:${{ github.repository }}.git"
+
+    - name: prepare rebase script
+      shell: bash
+      run: |
+        cat <<'EOF' > /tmp/rebase.sh
+        #!/bin/bash
+        set -ex
+        SOURCE="$1"
+        DEST="$2"
+
+        git checkout "$SOURCE"
+        git log -n1
+        git pull
+
+        git checkout "$DEST" -f || {
+          git checkout -b "$DEST"
+          git push --set-upstream origin "$DEST"
+        }
+        git pull
+        git log -n1
+        if $(git rebase --reapply-cherry-picks "$SOURCE"); then
+          git push -f
+          subject="could not push to $SOURCE"
+          if [[ "$?" != "0" ]]; then
+            gh issue list --search "is:open '$subject'" | grep -q OPEN
+            if [[ "$?" != "0" ]]; then
+              cat .github/workflows/rebase.txt | gh issue create \
+                --title "$subject" \
+                -F -
+            fi
+          fi
+        else
+          git rebase --abort || true
+
+          cat .github/workflows/rebase.txt | gh issue create \
+            --title "$SOURCE branch was updated - needs to deploy the changes to: $DEST " \
+            -F -
+        fi
+        EOF
+
+    - name: rebase specified branch to specified versions; if fails make issue
+      shell: bash
+      run: |
+        python3 <<EOF
+        import os
+        import subprocess
+        from copy import deepcopy
+
+        branches = "${{ inputs.branches }}"
+
+        print(f"Checking branches: {branches}")
+
+        for area in branches.split("|||"):
+          area = area.strip()
+          error = False
+
+          for branch in area.split(" "):
+            branch = branch.strip()
+            if not branch:
+              continue
+            try:
+              dest, source = branch.strip().split(":")
+            except ValueError:
+              raise Exception(f"Invalid format: {branch}")
+            dest = dest.strip()
+            source = source.strip()
+            print(f"Source is: {source}, dest is: {dest}")
+
+            try:
+              env = deepcopy(os.environ)
+              env['GH_TOKEN'] = "${{ github.token }}"
+              if not env["GH_TOKEN"]:
+                raise Exception("GH TOKEN missing")
+              subprocess.check_call(["/bin/bash", "/tmp/rebase.sh", source, dest], env=env)
+            except:
+              error = True
+        if error:
+          raise Exception("Error during rebasing.")
+        EOF

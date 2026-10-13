@@ -1,0 +1,150 @@
+name: "prepare repo actions"
+description: "creates ./odoobin to execute with current project name"
+
+inputs:
+  enabled:
+    type: boolean
+    default: true
+    required: false
+  project_name_prefix:
+    type: string
+    required: true
+  build:
+    type: boolean
+    default: "1"
+    required: false
+  cached_sources_dir:
+    type: string
+    required: false
+    description: "Path to cached sources directory. If set, rsync from there instead of running gimera."
+
+env:
+  GIMERA_NON_THREADED: 1
+  GIMERA_NON_INTERACTIVE: 1
+  GIMERA_NO_PRECOMMIT: 1
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: restore cached sources
+      if: ${{ inputs.enabled && inputs.cached_sources_dir != '' }}
+      shell: bash -l {0}
+      run: |
+        set -ex
+        cd "$GITHUB_WORKSPACE"
+        echo "::group::restore cached sources"
+        echo "Syncing sources from ${{ inputs.cached_sources_dir }}"
+        rsync -a --delete --exclude='.git' "${{ inputs.cached_sources_dir }}/" ./
+        echo "::endgroup::"
+
+    - name: fetch missing repos
+      if: ${{ inputs.enabled && inputs.cached_sources_dir == '' }}
+      shell: bash -l {0}
+      run: |
+        set -ex
+        cd "$GITHUB_WORKSPACE"
+        which gimera
+        which odoo
+        echo "::group::gimera"
+
+        rm .gitignore
+
+        max_attempts=10
+        attempt=1
+        random_wait_time=$(( (RANDOM % 30) + 1 ))
+
+        # always update robots
+        rm -Rf addons_robot || true
+
+        # remove pre commit config
+        rm .pre-commit-config.yaml || true
+        git add .pre-commit-config.yaml || true
+        git commit -m 'removed precommit'
+
+        while (( attempt <= max_attempts ))
+        do
+            if gimera apply -f -r -C -v -P -I; then
+              echo "Success on attempt $attempt! Congrats."
+              exit 0  # Exit script if the command is successful
+            else
+              echo "Failure on attempt $attempt."
+            fi
+            ((attempt++))
+            sleep "$random_wait_time"
+        done
+        echo "::endgroup::"
+        echo "Finished step fetch missing repos"
+
+    - name: local odoo bin
+      if: ${{ inputs.enabled }}
+      shell: bash -l {0}
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        echo "Creating local odoo bin"
+        python3 <<EOF
+
+        from pathlib import Path
+        import os
+        import hashlib
+
+        project_name = '${{ inputs.project_name_prefix}}_${GITHUB_REF#refs/heads/}'
+        for c in ' :;*&^%$"\'[]{}-.,':
+          project_name = project_name.replace(c, "_")
+        #projectname too long probably
+        project_name = hashlib.sha256(project_name.encode()).hexdigest()[:20]
+
+        content = []
+        content.append("#!/bin/bash -l")
+        content.append(f'odoo -p {project_name} "\$@"')
+        Path("odoobin").write_text('\n'.join(content))
+
+        EOF
+        chmod a+x odoobin
+        echo "Creating local odoo bin"
+
+    - name: reload
+      if: ${{ inputs.enabled && inputs.build }}
+      shell: bash -l {0}
+      run: |
+        set -ex
+        cd "$GITHUB_WORKSPACE"
+        echo "Reloading odoo with settings"
+        echo "::group::reloading"
+        ./odoobin fix-perm ~/.odoo
+        ODOO_PYTHON_VERSION=$(python3 -c 'from pathlib import Path; print(eval(Path("MANIFEST").read_text())["python_version"])')
+        ./odoobin setting -R DEVMODE=1
+        ./odoobin setting -R RUN_ROBOT=1
+        ./odoobin setting -R RUN_CRONJOBS=1
+        ./odoobin setting -R RUN_CRONJOBSHELL=1
+        ./odoobin setting -R RUN_MAIL=0
+        ./odoobin setting -R ODOO_PYTHON_VERSION="$ODOO_PYTHON_VERSION"
+        ./odoobin setting -R RUN_PROXY_PUBLISHED=0
+        ./odoobin setting -R RUN_PROXY_PORT=0
+        ./odoobin setting -R RUN_LOGS=0
+        ./odoobin setting -R RUN_REDIS=0
+        ./odoobin setting -R ODOO_DEMO=1
+        ./odoobin reload --demo
+        echo "::endgroup::"
+        echo "Done reloading"
+
+    - name: build docker images
+      if: ${{ inputs.enabled && inputs.build }}
+      shell: bash -l {0}
+      run: |
+        set -o pipefail
+        cd "$GITHUB_WORKSPACE"
+        echo "::group::build"
+        echo "Building - on error i will show the output log"
+        ./odoobin build -p 2>&1 | tee .build.log
+        status=${PIPESTATUS[0]}
+        echo "::endgroup::"
+        exit $status
+
+    - name: downing
+      if: ${{ inputs.enabled && inputs.build }}
+      shell: bash -l {0}
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        ./odoobin -f down || true
+        ./odoobin -f down
