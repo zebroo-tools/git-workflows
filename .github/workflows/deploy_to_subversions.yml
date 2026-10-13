@@ -1,3 +1,4 @@
+# Part of Zebroo GmbH. See LICENSE file for full copyright and licensing details (www.zebroo.de/license).
 # https://docs.github.com/en/actions/using-workflows/reusing-workflows
 name: Deploy fixes to other versions with rebase main
 
@@ -13,7 +14,7 @@ permissions: write-all
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, zebroo-tools]
 
     steps:
     - uses: actions/checkout@v3
