@@ -1,3 +1,4 @@
+# Part of Zebroo GmbH. See LICENSE file for full copyright and licensing details (www.zebroo.de/license).
 # https://docs.github.com/en/actions/using-workflows/reusing-workflows
 name: Run Robotests for repository
 
@@ -40,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: preparation steps
-        uses: Odoo-Ninjas/git-workflows/actions/prepare_repo@v9.19
+        uses: zebroo-tools/git-workflows/actions/prepare_repo@v9.19
         with:
           build: ${{ inputs.enabled }}
           enabled: ${{ inputs.enabled }}
