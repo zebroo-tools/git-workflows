@@ -1,0 +1,5 @@
+{
+	"window.title": "${rootName}@${remoteName}${separator}[Branch: v5]",
+	"peacock.remoteColor": "#937b53",
+	"workbench.colorCustomizations": {}
+}
