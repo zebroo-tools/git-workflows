@@ -1,3 +1,4 @@
+# Part of Zebroo GmbH. See LICENSE file for full copyright and licensing details (www.zebroo.de/license).
 # https://docs.github.com/en/actions/using-workflows/reusing-workflows
 name: Deploy fixes to other versions with rebase main
 
@@ -13,15 +14,15 @@ permissions: write-all
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, zebroo-tools]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
     - name: Set up Python 3.10
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: "3.10"
 
