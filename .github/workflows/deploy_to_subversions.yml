@@ -1,3 +1,4 @@
+# Part of Zebroo GmbH. See LICENSE file for full copyright and licensing details (www.zebroo.de/license).
 # https://docs.github.com/en/actions/using-workflows/reusing-workflows
 name: Deploy fixes to other versions with rebase main
 
@@ -18,7 +19,10 @@ on:
       SSH_PRIVATE_KEY:
         required: true
 
-permissions: write-all
+# Git pushes use SSH; the token only reads contents and opens conflict issues.
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   build:
