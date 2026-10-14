@@ -9,7 +9,12 @@ import unittest
 
 import yaml
 
-WORKFLOW = Path(os.environ.get("WORKFLOW_OVERRIDE", str(Path(__file__).parents[1] / ".github/workflows/deploy_to_subversions.yml")))
+WORKFLOW = Path(
+    os.environ.get(
+        "WORKFLOW_OVERRIDE",
+        str(Path(__file__).parents[1] / ".github/workflows/deploy_to_subversions.yml"),
+    )
+)
 
 
 def run(*args, cwd=None, env=None, check=True):
@@ -54,17 +59,22 @@ class IntegrationTests(unittest.TestCase):
         self.commit("dest.txt", "destination only")
         self.git("checkout", "source")
         self.commit("source.txt", "source only")
-        self.git("push", "origin", "source", "dest")
+        self.git("push", "--set-upstream", "origin", "source", "dest")
         self.before = run(
             "git", "--git-dir", str(self.remote), "rev-parse", "dest"
         ).stdout.strip()
         self.steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]["steps"]
         self.prepare = next(
-            s["run"] for s in self.steps if s.get("name", "") in {"Prepare integration script", "prepare rebase script"}
+            s["run"]
+            for s in self.steps
+            if s.get("name", "")
+            in {"Prepare integration script", "prepare rebase script"}
         )
-        self.body = self.prepare.split("cat <<'EOF' > /tmp/integrate.sh\n", 1)[
-            1
-        ].rsplit("\nEOF", 1)[0]
+        self.body = (
+            self.prepare.split("cat <<'EOF' > /tmp/", 1)[1]
+            .split("\n", 1)[1]
+            .rsplit("\nEOF", 1)[0]
+        )
         self.script = self.root / "integrate.sh"
         self.script.write_text(self.body)
 
@@ -111,7 +121,7 @@ class IntegrationTests(unittest.TestCase):
         self.commit("base.txt", "source change")
         self.git("checkout", "dest")
         self.commit("base.txt", "destination change")
-        self.git("push", "origin", "source", "dest")
+        self.git("push", "--set-upstream", "origin", "source", "dest")
         before = self.remote_dest()
         result = self.integrate()
         self.assertNotEqual(result.returncode, 0)
