@@ -1,6 +1,6 @@
 # Part of Zebroo GmbH. See LICENSE file for full copyright and licensing details (www.zebroo.de/license).
 # https://docs.github.com/en/actions/using-workflows/reusing-workflows
-name: Deploy fixes to other versions with rebase main
+name: Prepare reviewed version integration
 
 on:
   workflow_call:
@@ -19,9 +19,10 @@ on:
       SSH_PRIVATE_KEY:
         required: true
 
-# Git pushes use SSH; the token only reads contents and opens conflict issues.
+# Git pushes use SSH; the token prepares integration PRs and conflict issues.
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   issues: write
 
 jobs:
@@ -45,7 +46,6 @@ jobs:
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 400 ~/.ssh/id_rsa
         chmod 500 ~/.ssh
-        cat .git/config
 
     - name: setup default name / email
       run: |
@@ -54,81 +54,71 @@ jobs:
         git config --global user.name "${username}"
         git remote set-url origin "git@github.com:${{ github.repository }}.git"
 
-    - name: prepare rebase script
+    - name: Prepare integration script
       shell: bash
       run: |
-        cat <<'EOF' > /tmp/rebase.sh
+        cat <<'EOF' > /tmp/integrate.sh
         #!/bin/bash
-        set -ex
+        set -euo pipefail
         SOURCE="$1"
         DEST="$2"
-
-        git checkout "$SOURCE"
-        git log -n1
-        git pull
-
-        git checkout "$DEST" -f || {
-          git checkout -b "$DEST"
-          git push --set-upstream origin "$DEST"
-        }
-        git pull
-        git log -n1
-        if $(git rebase --reapply-cherry-picks "$SOURCE"); then
-          git push -f
-          subject="could not push to $SOURCE"
-          if [[ "$?" != "0" ]]; then
-            gh issue list --search "is:open '$subject'" | grep -q OPEN
-            if [[ "$?" != "0" ]]; then
-              cat .github/workflows/rebase.txt | gh issue create \
-                --title "$subject" \
-                -F -
-            fi
-          fi
+        git check-ref-format --branch "$SOURCE" >/dev/null
+        git check-ref-format --branch "$DEST" >/dev/null
+        git fetch origin "+refs/heads/$SOURCE:refs/remotes/origin/$SOURCE" "+refs/heads/$DEST:refs/remotes/origin/$DEST"
+        source_ref="refs/remotes/origin/$SOURCE"
+        dest_ref="refs/remotes/origin/$DEST"
+        if git merge-base --is-ancestor "$source_ref" "$dest_ref"; then
+          echo "Source already integrated into destination"
+          exit 0
+        fi
+        source_sha="$(git rev-parse "$source_ref")"
+        branch="automation/version-sync-${SOURCE//\//-}-to-${DEST//\//-}-${source_sha:0:12}"
+        git checkout --detach "$dest_ref"
+        if ! git merge --no-ff --no-edit "$source_ref"; then
+          git merge --abort
+          gh issue create --title "$SOURCE branch was updated - needs to deploy the changes to: $DEST" \
+            --body "Automatic integration has merge conflicts. Prepare a reviewed resolution; no destination history was changed." || true
+          exit 1
+        fi
+        if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          git merge-base --is-ancestor "$source_ref" "refs/remotes/origin/$branch"
+          git merge-base --is-ancestor "$dest_ref" "refs/remotes/origin/$branch"
         else
-          git rebase --abort || true
-
-          cat .github/workflows/rebase.txt | gh issue create \
-            --title "$SOURCE branch was updated - needs to deploy the changes to: $DEST " \
-            -F -
+          git push origin "HEAD:refs/heads/$branch"
+        fi
+        existing="$(gh pr list --head "$branch" --base "$DEST" --state open --json number --jq 'length')"
+        if [[ "$existing" == "0" ]]; then
+          gh pr create --head "$branch" --base "$DEST" \
+            --title "Integrate $SOURCE into $DEST" \
+            --body "Merge integration preserving both histories. Review framework compatibility and run target-version tests before merging. Source: $source_sha."
         fi
         EOF
 
-    - name: rebase specified branch to specified versions; if fails make issue
+    - name: Prepare integration PRs; fail on conflicts or rejected pushes
       shell: bash
+      env:
+        BRANCH_MAPPINGS: ${{ inputs.branches }}
+        GH_TOKEN: ${{ github.token }}
       run: |
-        python3 <<EOF
-        import os
-        import subprocess
-        from copy import deepcopy
-
-        branches = "${{ inputs.branches }}"
-
-        print(f"Checking branches: {branches}")
-
-        for area in branches.split("|||"):
-          area = area.strip()
-          error = False
-
-          for branch in area.split(" "):
-            branch = branch.strip()
-            if not branch:
-              continue
-            try:
-              dest, source = branch.strip().split(":")
-            except ValueError:
-              raise Exception(f"Invalid format: {branch}")
-            dest = dest.strip()
-            source = source.strip()
-            print(f"Source is: {source}, dest is: {dest}")
-
-            try:
-              env = deepcopy(os.environ)
-              env['GH_TOKEN'] = "${{ github.token }}"
-              if not env["GH_TOKEN"]:
-                raise Exception("GH TOKEN missing")
-              subprocess.check_call(["/bin/bash", "/tmp/rebase.sh", source, dest], env=env)
-            except:
-              error = True
-        if error:
-          raise Exception("Error during rebasing.")
-        EOF
+        set -uo pipefail
+        [[ -n "$BRANCH_MAPPINGS" ]] || exit 1
+        failed=0
+        areas="${BRANCH_MAPPINGS//|||/$'\n'}"
+        # Independent groups continue after a failure, but the job stays failed.
+        while IFS= read -r area; do
+          for mapping in $area; do
+            if [[ "$mapping" != *:* || "$mapping" == *:*:* ]]; then
+              echo "Invalid branch mapping"
+              failed=1
+              break
+            fi
+            dest="${mapping%%:*}"
+            source="${mapping#*:}"
+            if ! bash /tmp/integrate.sh "$source" "$dest"; then
+              failed=1
+              break
+            fi
+          done
+        done <<< "$areas"
+        exit "$failed"
