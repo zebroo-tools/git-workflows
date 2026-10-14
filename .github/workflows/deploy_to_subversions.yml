@@ -19,7 +19,7 @@ on:
       SSH_PRIVATE_KEY:
         required: true
 
-# Git pushes use SSH; the token only reads contents and opens conflict issues.
+# Git pushes use SSH; the token prepares integration PRs and conflict issues.
 permissions:
   contents: write
   pull-requests: write
@@ -46,7 +46,6 @@ jobs:
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 400 ~/.ssh/id_rsa
         chmod 500 ~/.ssh
-        cat .git/config
 
     - name: setup default name / email
       run: |
@@ -103,7 +102,9 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         set -uo pipefail
+        [[ -n "$BRANCH_MAPPINGS" ]] || exit 1
         failed=0
+        areas="${BRANCH_MAPPINGS//|||/$'\n'}"
         # Independent groups continue after a failure, but the job stays failed.
         while IFS= read -r area; do
           for mapping in $area; do
@@ -119,5 +120,5 @@ jobs:
               break
             fi
           done
-        done < <(printf '%s\n' "$BRANCH_MAPPINGS" | sed 's/|||/\n/g')
+        done <<< "$areas"
         exit "$failed"
