@@ -41,6 +41,7 @@ class IntegrationTests(unittest.TestCase):
         self.calls = self.root / "gh-calls"
         (self.bin / "gh").write_text(
             '#!/bin/bash\nprintf "%s\\n" "$*" >> "$GH_CALLS"\nif [[ "$1 $2" == "pr list" ]]; then echo 0; fi\n'
+            'if [[ "$1 $2" == "issue list" ]]; then printf "%s" "${GH_OPEN_ISSUES:-}"; fi\n'
         )
         (self.bin / "gh").chmod(0o755)
         self.env = {
@@ -77,6 +78,9 @@ class IntegrationTests(unittest.TestCase):
         )
         self.script = self.root / "integrate.sh"
         self.script.write_text(self.body)
+
+    def gh_calls(self):
+        return self.calls.read_text() if self.calls.exists() else ""
 
     def git(self, *args, check=True):
         return run("git", *args, cwd=self.repo, env=self.env, check=check)
@@ -137,7 +141,7 @@ class IntegrationTests(unittest.TestCase):
         result = self.integrate()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.remote_dest(), self.before)
-        self.assertFalse(self.calls.exists())
+        self.assertNotIn("create", self.gh_calls())
 
     def test_integrated_source_is_noop(self):
         self.git("checkout", "dest")
@@ -146,7 +150,33 @@ class IntegrationTests(unittest.TestCase):
         before = self.remote_dest()
         self.assertEqual(self.integrate().returncode, 0)
         self.assertEqual(self.remote_dest(), before)
-        self.assertFalse(self.calls.exists())
+        self.assertNotIn("create", self.gh_calls())
+
+    def make_conflict(self):
+        self.commit("base.txt", "source change")
+        self.git("checkout", "dest")
+        self.commit("base.txt", "destination change")
+        self.git("push", "--set-upstream", "origin", "source", "dest")
+
+    def test_conflict_comments_on_open_issue_instead_of_creating_one(self):
+        self.make_conflict()
+        self.env["GH_OPEN_ISSUES"] = "42"
+        self.assertNotEqual(self.integrate().returncode, 0)
+        self.assertIn("issue comment 42", self.gh_calls())
+        self.assertNotIn("issue create", self.gh_calls())
+
+    def test_clean_merge_closes_open_conflict_issue(self):
+        self.env["GH_OPEN_ISSUES"] = "42"
+        self.assertEqual(self.integrate().returncode, 0)
+        self.assertIn("issue close 42", self.gh_calls())
+
+    def test_integrated_source_closes_open_conflict_issue(self):
+        self.git("checkout", "dest")
+        self.git("merge", "--no-edit", "source")
+        self.git("push", "origin", "dest")
+        self.env["GH_OPEN_ISSUES"] = "42"
+        self.assertEqual(self.integrate().returncode, 0)
+        self.assertIn("issue close 42", self.gh_calls())
 
     def test_changed_destination_does_not_overwrite_existing_branch(self):
         self.assertEqual(self.integrate().returncode, 0)
