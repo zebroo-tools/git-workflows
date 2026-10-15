@@ -67,19 +67,42 @@ jobs:
         git fetch origin "+refs/heads/$SOURCE:refs/remotes/origin/$SOURCE" "+refs/heads/$DEST:refs/remotes/origin/$DEST"
         source_ref="refs/remotes/origin/$SOURCE"
         dest_ref="refs/remotes/origin/$DEST"
+        source_sha="$(git rev-parse "$source_ref")"
+        # One conflict issue per source/destination pair. Creating a new one on
+        # every push left 4309 of them in zebroo-sync (15.10.2026), most of them
+        # long resolved.
+        conflict_title="$SOURCE branch was updated - needs to deploy the changes to: $DEST"
+        open_conflict_issues() {
+          gh issue list --state open --author "github-actions[bot]" \
+            --search "in:title \"$conflict_title\"" --json number,title \
+            --jq "map(select(.title == \"$conflict_title\")) | .[].number"
+        }
+        close_conflict_issues() {
+          local number
+          for number in $(open_conflict_issues || true); do
+            gh issue close "$number" --reason completed \
+              --comment "Merges cleanly again at $SOURCE $source_sha." || true
+          done
+        }
         if git merge-base --is-ancestor "$source_ref" "$dest_ref"; then
           echo "Source already integrated into destination"
+          close_conflict_issues
           exit 0
         fi
-        source_sha="$(git rev-parse "$source_ref")"
         branch="automation/version-sync-${SOURCE//\//-}-to-${DEST//\//-}-${source_sha:0:12}"
         git checkout --detach "$dest_ref"
         if ! git merge --no-ff --no-edit "$source_ref"; then
           git merge --abort
-          gh issue create --title "$SOURCE branch was updated - needs to deploy the changes to: $DEST" \
-            --body "Automatic integration has merge conflicts. Prepare a reviewed resolution; no destination history was changed." || true
+          existing_issue="$(open_conflict_issues | head -n 1 || true)"
+          if [[ -n "$existing_issue" ]]; then
+            gh issue comment "$existing_issue" --body "Still conflicting at $SOURCE $source_sha." || true
+          else
+            gh issue create --title "$conflict_title" \
+              --body "Automatic integration has merge conflicts. Prepare a reviewed resolution; no destination history was changed." || true
+          fi
           exit 1
         fi
+        close_conflict_issues
         if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then
           git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
           git merge-base --is-ancestor "$source_ref" "refs/remotes/origin/$branch"
